@@ -1,0 +1,63 @@
+{
+  "model": "YOLOv10",
+  "variant": "yolov10n",
+  "framework": "ultralytics 8.4.120",
+  "type": "single-stage (NMS-free)",
+  "pretrained": true,
+  "params_M": 2.78,
+  "epochs": 20,
+  "imgsz": 512,
+  "batch": 4,
+  "device": "CPU",
+  "train_time_min": 37.37,
+  "test": {
+    "precision": 0.5652321541022092,
+    "recall": 0.5274152449268242,
+    "mAP50": 0.5664828576416527,
+    "mAP75": 0.14742887543473635,
+    "mAP50_95": 0.24914399809814664,
+    "f1": 0.5456692712786329
+  },
+  "per_class": {
+    "missing_hole": {
+      "precision": 0.6513780911516756,
+      "recall": 0.8348974808663956,
+      "mAP50": 0.8213900526682412,
+      "mAP50_95": 0.4486050995427169
+    },
+    "mouse_bite": {
+      "precision": 0.6103337502922986,
+      "recall": 0.4074074074074074,
+      "mAP50": 0.6023062014931803,
+      "mAP50_95": 0.22772574086611871
+    },
+    "open_circuit": {
+      "precision": 0.40500184710671927,
+      "recall": 0.3867575780679409,
+      "mAP50": 0.32509921535641806,
+      "mAP50_95": 0.16293833390688184
+    },
+    "short": {
+      "precision": 0.5359772398934652,
+      "recall": 0.6274509803921569,
+      "mAP50": 0.627462893340089,
+      "mAP50_95": 0.23425687600291348
+    },
+    "spur": {
+      "precision": 0.6486539325358238,
+      "recall": 0.46154945139847364,
+      "mAP50": 0.5629903622767578,
+      "mAP50_95": 0.2158623280270814
+    },
+    "spurious_copper": {
+      "precision": 0.5400480636332726,
+      "recall": 0.44642857142857145,
+      "mAP50": 0.4596484207152299,
+      "mAP50_95": 0.20547561024316746
+    }
+  },
+  "latency_ms": 52.13,
+  "latency_std_ms": 6.68,
+  "fps": 19.2,
+  "weights": "C:\\Users\\User\\Image-Processing\\Student3-Defect Detection\\runs\\yolov10n_pcb\\weights\\best.pt"
+}

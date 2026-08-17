@@ -1,0 +1,63 @@
+{
+  "model": "RT-DETR",
+  "variant": "rtdetr-l",
+  "framework": "ultralytics 8.4.120",
+  "type": "end-to-end transformer (NMS-free)",
+  "pretrained": true,
+  "params_M": 32.97,
+  "epochs": 10,
+  "imgsz": 512,
+  "batch": 2,
+  "device": "CPU",
+  "train_time_min": 161.25,
+  "test": {
+    "precision": 0.7010383218294195,
+    "recall": 0.6371240628131597,
+    "mAP50": 0.6694216415331807,
+    "mAP75": 0.18035318313309615,
+    "mAP50_95": 0.2931631231666375,
+    "f1": 0.667554833281281
+  },
+  "per_class": {
+    "missing_hole": {
+      "precision": 0.6145863297222302,
+      "recall": 0.8297872340425532,
+      "mAP50": 0.8440126868406044,
+      "mAP50_95": 0.4700283045796182
+    },
+    "mouse_bite": {
+      "precision": 0.7102191860795849,
+      "recall": 0.7777777777777778,
+      "mAP50": 0.7787499152237437,
+      "mAP50_95": 0.2693985257363594
+    },
+    "open_circuit": {
+      "precision": 0.694772130553043,
+      "recall": 0.5690836320178789,
+      "mAP50": 0.6326158964508612,
+      "mAP50_95": 0.2766796608030117
+    },
+    "short": {
+      "precision": 0.6746208728298485,
+      "recall": 0.5294117647058824,
+      "mAP50": 0.4964570543408127,
+      "mAP50_95": 0.18876196986863686
+    },
+    "spur": {
+      "precision": 0.8945226435577692,
+      "recall": 0.6523982540491519,
+      "mAP50": 0.7737555340420502,
+      "mAP50_95": 0.33487071574357147
+    },
+    "spurious_copper": {
+      "precision": 0.6175087682340415,
+      "recall": 0.4642857142857143,
+      "mAP50": 0.49093876230101247,
+      "mAP50_95": 0.21923956226862726
+    }
+  },
+  "latency_ms": 482.63,
+  "latency_std_ms": 42.23,
+  "fps": 2.1,
+  "weights": "C:\\Users\\User\\Image-Processing\\Student3-Defect Detection\\runs\\rtdetr-l_pcb\\weights\\best.pt"
+}

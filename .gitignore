@@ -1,3 +1,9 @@
 /Clean_Dataset
 /PCB_DATASET
 /Preprocessed_Dataset
+/Calibrated_Dataset
+/DefectDetection_Benchmark/labels
+/Student3-Defect Detection/dataset/yolo/labels
+/Student3-Defect Detection/dataset/yolo/images
+/Student3-Defect Detection/runs
+/Student3-Defect Detection/results/figures

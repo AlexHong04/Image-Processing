@@ -1,0 +1,4 @@
+Model,Variant,Type,Params (M),Epochs,Device,Precision,Recall,F1,mAP@0.5,mAP@0.5:0.95,Latency (ms),FPS,Train (min)
+YOLOv10,yolov10n,single-stage (NMS-free),2.78,20,CPU,0.5652,0.5274,0.5457,0.5665,0.2491,52.13,19.2,37.37
+Faster R-CNN,fasterrcnn_resnet50_fpn_v2_smallanchors,"two-stage (RPN + RoIAlign, with NMS)",43.28,3,CPU,0.7143,0.1645,0.2674,0.4669,0.164,2612.09,0.4,182.18
+RT-DETR,rtdetr-l,end-to-end transformer (NMS-free),32.97,10,CPU,0.701,0.6371,0.6676,0.6694,0.2932,482.63,2.1,161.25

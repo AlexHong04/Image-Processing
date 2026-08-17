@@ -1,0 +1,7 @@
+,YOLOv10,Faster R-CNN,RT-DETR
+missing_hole,0.449,0.412,0.47
+mouse_bite,0.228,0.144,0.269
+open_circuit,0.163,0.133,0.277
+short,0.234,0.127,0.189
+spur,0.216,0.079,0.335
+spurious_copper,0.205,0.089,0.219
