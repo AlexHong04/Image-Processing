@@ -30,6 +30,7 @@ Usage from Student 2 / Student 3 notebooks:
     )
 """
 
+import ast
 import contextlib
 import io
 import json
@@ -416,11 +417,51 @@ _STUDENT1_FN_NAMES = ("preprocess_image", "process_image_from_bytes", "process_f
 _STUDENT1_CACHE = None
 
 
+def _is_definition_cell(src):
+    """
+    True if `src` is a "definition-only" notebook cell: it defines at least one
+    function/class and its top-level statements are only definitions, module-level
+    constants, imports, docstrings and progress prints.
+
+    Demo / batch cells (loops, plots, dataset loading, file writes) and plain
+    assignment cells are skipped, so loading Student 1's notebook has no side
+    effects. Executing every definition cell - not just the three wired functions -
+    is what keeps Student 1's helpers (prepare_board, crop_pcb, find_pcb_regions,
+    _pcb_mask, TARGET_SIZE, SAT_THRESHOLD, ...) available to the functions that
+    Student 2 calls, however Student 1 renames or extends them.
+    """
+    try:
+        tree = ast.parse(src)
+    except SyntaxError:
+        return False
+
+    has_def = False
+    for node in tree.body:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            has_def = True
+        elif isinstance(node, (ast.Assign, ast.AnnAssign, ast.Import, ast.ImportFrom, ast.Pass)):
+            continue
+        elif isinstance(node, ast.Expr):
+            value = node.value
+            if isinstance(value, ast.Constant) and isinstance(value.value, str):
+                continue                          # docstring
+            if (isinstance(value, ast.Call) and isinstance(value.func, ast.Name)
+                    and value.func.id == "print"):
+                continue                          # harmless progress print
+            return False                          # any other top-level call: skip
+        else:
+            return False                          # loops / conditionals / etc.: skip
+    return has_def
+
+
 def load_student1_functions():
     """
-    Dynamically load Student 1's three functions directly from their notebook
-    (single source of truth = Student 1's notebook). Only the function-definition
-    cells are executed, so no demo/batch side effects. Cached after first call.
+    Dynamically load Student 1's functions directly from their notebook (single
+    source of truth = Student 1's notebook). Every "definition-only" cell is
+    executed in notebook order, so the three wired functions AND the helpers they
+    depend on (prepare_board / crop_pcb / find_pcb_regions / _pcb_mask ...) are all
+    available. Demo/batch cells that run loops or plots are skipped and stdout is
+    suppressed. Cached after the first call.
 
     Returns a dict: {name: function} for
     'preprocess_image', 'process_image_from_bytes', 'process_full_video_backend'.
@@ -442,11 +483,11 @@ def load_student1_functions():
         if cell["cell_type"] != "code":
             continue
         src = "".join(cell.get("source", []))
-        # Only exec cells that DEFINE one of Student 1's three functions.
-        if any(("def " + name + "(") in src for name in _STUDENT1_FN_NAMES):
-            # Suppress any prints in Student 1's cells so the notebook output stays clean.
-            with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
-                exec(compile(src, str(STUDENT1_NOTEBOOK), "exec"), ns)
+        if not _is_definition_cell(src):
+            continue
+        # Suppress any prints in Student 1's cells so the notebook output stays clean.
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            exec(compile(src, str(STUDENT1_NOTEBOOK), "exec"), ns)
 
     _STUDENT1_CACHE = {name: ns[name] for name in _STUDENT1_FN_NAMES if name in ns}
     return _STUDENT1_CACHE
@@ -486,6 +527,8 @@ def student2_from_student1_bytes(image_bytes):
     if processed is None:
         return None
     img = cv2.imdecode(np.frombuffer(processed, np.uint8), cv2.IMREAD_COLOR)
+    if img is None:
+        return None                                           # S1 returned undecodable bytes
     return align_image(img)                                    # Student 2 -> aligned array
 
 
