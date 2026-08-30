@@ -1,0 +1,19 @@
+=== running 00_data_preparation.ipynb: 13 code cells ===
+
+----- cell 1/13 -----
+Project root : /sessions/rcw-015t7ucr4fkjtnmsx7mhzqs6/mnt/Image-Processing
+OpenCV       : 5.0.0
+ALIGN_TARGET : 1280 px (longest side of Student 2's output)
+
+----- cell 2/13 -----
+Originals : /sessions/rcw-015t7ucr4fkjtnmsx7mhzqs6/mnt/Image-Processing/PCB_DATASET/images
+Rotated   : /sessions/rcw-015t7ucr4fkjtnmsx7mhzqs6/mnt/Image-Processing/PCB_DATASET/rotation
+Output    : /sessions/rcw-015t7ucr4fkjtnmsx7mhzqs6/mnt/Image-Processing/Student3-Defect Detection/dataset
+
+----- cell 3/13 -----
+Boards indexed         : 693
+With a rotated copy    : 693
+Total annotated boxes  : 2953
+Problems               : 0 []
+
+----- cell 4/13 -----

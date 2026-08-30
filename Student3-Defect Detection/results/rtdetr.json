@@ -9,7 +9,7 @@
   "imgsz": 512,
   "batch": 2,
   "device": "CPU",
-  "train_time_min": 161.25,
+  "train_time_min": 157.33,
   "test": {
     "precision": 0.7010383218294195,
     "recall": 0.6371240628131597,
@@ -56,8 +56,8 @@
       "mAP50_95": 0.21923956226862726
     }
   },
-  "latency_ms": 482.63,
-  "latency_std_ms": 42.23,
-  "fps": 2.1,
+  "latency_ms": 555.96,
+  "latency_std_ms": 19.74,
+  "fps": 1.8,
   "weights": "C:\\Users\\User\\Image-Processing\\Student3-Defect Detection\\runs\\rtdetr-l_pcb\\weights\\best.pt"
 }
