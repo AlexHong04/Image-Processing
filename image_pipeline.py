@@ -45,7 +45,10 @@ import numpy as np
 # --------------------------------------------------------------------------- #
 ROOT = Path(__file__).resolve().parent
 
-ALIGN_TARGET = 640                 # longest side of the aligned output
+ALIGN_TARGET = 1280                # longest side of the aligned output.
+#   640 shrinks a ~70 px PCB defect to ~15 px, which is below what a detector
+#   can reliably find. 1280 keeps defects at ~30 px. The detector is TRAINED at
+#   this same value - change it here and the training set must be rebuilt.
 PREPROCESSED_DIR = ROOT / "Preprocessed_Dataset"   # Student 1 output folder
 CLEAN_DIR = ROOT / "Clean_Dataset"                 # Student 1 input folder
 RAW_ROTATION_DIR = ROOT / "PCB_DATASET" / "rotation"
@@ -252,7 +255,34 @@ def compute_destination(ordered, target_longest=ALIGN_TARGET):
     return dst, out_w, out_h
 
 
-def align_image(img):
+def align_image_with_matrix(img, target_longest=None):
+    """
+    Same as `align_image` but ALSO returns the homography and the output size.
+
+    The homography is what lets ground-truth boxes (or any other coordinate) be
+    carried from the input image into the aligned image, which is required to
+    build a training set that matches what the detector sees at run time.
+
+    Returns:
+        (aligned_bgr, H_3x3, (out_w, out_h)) or (None, None, None) on failure.
+    """
+    if img is None:
+        return None, None, None
+
+    corners, _ = board_corners_threshold(img)
+    if corners is None:
+        return None, None, None
+
+    ordered = order_points(corners)
+    dst, out_w, out_h = compute_destination(ordered, target_longest or ALIGN_TARGET)
+    if dst is None:
+        return None, None, None
+
+    matrix = cv2.getPerspectiveTransform(ordered, dst)
+    return cv2.warpPerspective(img, matrix, (out_w, out_h)), matrix, (out_w, out_h)
+
+
+def align_image(img, target_longest=None):
     """
     Detects the PCB boundary in `img` and warps it to a top-down view,
     preserving the board's aspect ratio (longest side = ALIGN_TARGET).
@@ -264,20 +294,7 @@ def align_image(img):
         Aligned BGR image (numpy array), or None if the board boundary
         could not be resolved to a clean quadrilateral.
     """
-    if img is None:
-        return None
-
-    corners, _ = board_corners_threshold(img)
-    if corners is None:
-        return None
-
-    ordered = order_points(corners)
-    dst, out_w, out_h = compute_destination(ordered)
-    if dst is None:
-        return None
-
-    matrix = cv2.getPerspectiveTransform(ordered, dst)
-    return cv2.warpPerspective(img, matrix, (out_w, out_h))
+    return align_image_with_matrix(img, target_longest)[0]
 
 
 def quick_corner_check(img):
@@ -532,3 +549,212 @@ def save_aligned(array, save_path):
         return False
     os.makedirs(os.path.dirname(save_path), exist_ok=True)
     return cv2.imwrite(save_path, array)
+
+
+# --------------------------------------------------------------------------- #
+# Geometry helpers : carry annotations through the same transforms
+# --------------------------------------------------------------------------- #
+# The detector must be trained on exactly what Student 2 hands it at run time.
+# That means the ground-truth boxes have to travel through the same geometry as
+# the pixels: the rotation applied when PCB_DATASET/rotation was generated, and
+# Student 2's perspective warp. These helpers do that mapping.
+
+def transform_points(points, matrix):
+    """
+    Map Nx2 points through a 2x3 affine matrix or a 3x3 homography.
+
+    Args:
+        points: sequence of (x, y).
+        matrix: 2x3 (affine, e.g. a rotation) or 3x3 (homography).
+
+    Returns:
+        Nx2 float32 array of mapped points.
+    """
+    pts = np.asarray(points, dtype=np.float32).reshape(-1, 1, 2)
+    matrix = np.asarray(matrix, dtype=np.float32)
+    if matrix.shape == (2, 3):
+        out = cv2.transform(pts, matrix)
+    else:
+        out = cv2.perspectiveTransform(pts, matrix)
+    return out.reshape(-1, 2)
+
+
+def transform_boxes(boxes, matrix, out_w, out_h, min_size=2.0):
+    """
+    Map axis-aligned [x1, y1, x2, y2] boxes through `matrix`.
+
+    All four corners are mapped and the axis-aligned hull is taken, because a
+    rotation or a perspective warp turns a rectangle into a quadrilateral. Boxes
+    are clipped to the output image and dropped if they shrink below `min_size`
+    or fall outside it entirely.
+
+    Returns:
+        (mapped_boxes, kept_indices) - `kept_indices` lets the caller drop the
+        matching class labels for boxes that were discarded.
+    """
+    mapped, kept = [], []
+    for i, (x1, y1, x2, y2) in enumerate(boxes):
+        corners = transform_points(
+            [[x1, y1], [x2, y1], [x2, y2], [x1, y2]], matrix)
+        nx1, ny1 = corners.min(axis=0)
+        nx2, ny2 = corners.max(axis=0)
+        nx1 = float(max(0.0, min(nx1, out_w)))
+        nx2 = float(max(0.0, min(nx2, out_w)))
+        ny1 = float(max(0.0, min(ny1, out_h)))
+        ny2 = float(max(0.0, min(ny2, out_h)))
+        if (nx2 - nx1) >= min_size and (ny2 - ny1) >= min_size:
+            mapped.append([nx1, ny1, nx2, ny2])
+            kept.append(i)
+    return mapped, kept
+
+
+def rotation_matrix_bound(width, height, angle):
+    """
+    Reproduce the rotation used to build PCB_DATASET/rotation (`rotate.py`:
+    `rotate_bound_white_bg`), returning the matrix instead of the image so the
+    annotations can be rotated with it.
+
+    Args:
+        width, height: size of the ORIGINAL (unrotated) image.
+        angle: the angle recorded in PCB_DATASET/rotation/<class>_angles.txt.
+
+    Returns:
+        (M_2x3, new_width, new_height) - the canvas grows to fit the rotation,
+        exactly as rotate.py does, so `new_width/new_height` should match the
+        size of the file in the rotation folder.
+    """
+    c_x, c_y = width // 2, height // 2
+    matrix = cv2.getRotationMatrix2D((c_x, c_y), -angle, 1.0)
+    cos, sin = abs(matrix[0, 0]), abs(matrix[0, 1])
+    new_w = int((height * sin) + (width * cos))
+    new_h = int((height * cos) + (width * sin))
+    matrix[0, 2] += (new_w / 2) - c_x
+    matrix[1, 2] += (new_h / 2) - c_y
+    return matrix, new_w, new_h
+
+
+def rotate_bound_white_bg(image, angle):
+    """`rotate.py`'s rotation, kept here so the whole chain lives in one module."""
+    matrix, new_w, new_h = rotation_matrix_bound(image.shape[1], image.shape[0], angle)
+    return cv2.warpAffine(image, matrix, (new_w, new_h), borderValue=(143, 148, 151))
+
+
+def read_rotation_angles(angles_txt):
+    """
+    Parse a PCB_DATASET/rotation/<class>_angles.txt file.
+
+    Returns:
+        dict {file_stem: angle_in_degrees}
+    """
+    angles = {}
+    with open(angles_txt, encoding="utf-8") as handle:
+        for line in handle:
+            line = line.strip()
+            if not line:
+                continue
+            parts = line.split()
+            if len(parts) >= 2:
+                angles[parts[0]] = float(parts[-1])
+    return angles
+
+
+# --------------------------------------------------------------------------- #
+# THE detector input : one function used by training AND by inference
+# --------------------------------------------------------------------------- #
+def detection_input(raw_bgr, target_longest=None, fallback=True):
+    """
+    Turn a RAW acquisition image into exactly the array the defect detector
+    expects: Student 1's preprocessing followed by Student 2's alignment.
+
+    This is deliberately the ONLY entry point used both when the training set is
+    built and when a board is inspected, so the detector can never be shown a
+    kind of image it was not trained on. If this function changes, the training
+    set must be rebuilt.
+
+    Args:
+        raw_bgr: raw BGR image straight from the camera / dataset folder.
+        target_longest: override ALIGN_TARGET (used when rebuilding the dataset).
+        fallback: if the board outline cannot be found, resize the whole
+                  preprocessed frame instead of returning None, so inference
+                  degrades gracefully rather than silently detecting nothing.
+
+    Returns:
+        (image_for_detector, M_3x3, (out_w, out_h)).
+        `M` maps coordinates in `raw_bgr` to coordinates in the returned image.
+        Returns (None, None, None) only when `fallback=False` and alignment failed.
+    """
+    if raw_bgr is None:
+        return None, None, None
+
+    target = target_longest or ALIGN_TARGET
+    preprocessed = preprocess_image(raw_bgr)
+    if preprocessed is None:
+        return None, None, None
+
+    aligned, matrix, size = align_image_with_matrix(preprocessed, target)
+    if aligned is not None:
+        return aligned, matrix, size
+
+    if not fallback:
+        return None, None, None
+
+    # Fallback: no clean quadrilateral -> keep the whole frame, scaled to target
+    h, w = preprocessed.shape[:2]
+    scale = target / max(w, h)
+    out_w, out_h = int(round(w * scale)), int(round(h * scale))
+    resized = cv2.resize(preprocessed, (out_w, out_h), interpolation=cv2.INTER_AREA)
+    matrix = np.array([[scale, 0.0, 0.0],
+                       [0.0, scale, 0.0],
+                       [0.0, 0.0, 1.0]], dtype=np.float32)
+    return resized, matrix, (out_w, out_h)
+
+
+def as_homography(matrix):
+    """Promote a 2x3 affine matrix to a 3x3 homography (3x3 passes through)."""
+    m = np.asarray(matrix, dtype=np.float32)
+    if m.shape == (2, 3):
+        m = np.vstack([m, [0.0, 0.0, 1.0]]).astype(np.float32)
+    return m
+
+
+def compose(*matrices):
+    """
+    Compose transforms in the order they are APPLIED.
+
+    `compose(R, H)` means "first rotate, then warp", i.e. the matrix H @ R.
+    Composing first and mapping once is more accurate than mapping a box twice,
+    because each mapping of an axis-aligned box has to take a hull and would
+    otherwise inflate the box at every step.
+    """
+    out = np.eye(3, dtype=np.float32)
+    for matrix in matrices:
+        out = as_homography(matrix) @ out
+    return out
+
+
+def align_from_source(image_path, raw=True, target_longest=None):
+    """
+    Read an image from disk and return Student 2's aligned board.
+
+    Args:
+        image_path: path to the image.
+        raw: True  -> the file is a RAW acquisition image, so Student 1's
+                      preprocessing runs first (this is the real pipeline).
+             False -> the file already came out of Student 1
+                      (e.g. Preprocessed_Dataset), so only alignment runs.
+        target_longest: override ALIGN_TARGET.
+
+    Returns:
+        Aligned BGR array, or None if the board outline was not found.
+
+    Why this exists: the batch step used to call `process_from_folder(cls, filename)`,
+    which always looks inside Preprocessed_Dataset. When the notebook was pointed at
+    PCB_DATASET/rotation the class folders are named `<Class>_rotation`, that lookup
+    missed every file, and the whole batch silently reported "not aligned".
+    """
+    img = cv2.imread(str(image_path))
+    if img is None:
+        return None
+    if raw:
+        return detection_input(img, target_longest=target_longest, fallback=False)[0]
+    return align_image(img, target_longest)
