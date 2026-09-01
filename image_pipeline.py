@@ -17,6 +17,8 @@ Flow (each step returns its result to the caller):
     Student 1 : preprocess_image(img)           array  -> preprocessed array
                 preprocess_from_bytes(bytes)    bytes  -> preprocessed array
                 preprocess_video_bytes(bytes)   video  -> preprocessed video bytes
+                student1_validate(img)          (valid, message) via Student 1's
+                                                validate_pcb_image (new in notebook)
     Student 2 : align_image(img)                array  -> aligned array
     Wired     : process_image_array / process_image_bytes / process_video_bytes
                 (Student 1 -> Student 2, all in-memory)
@@ -27,6 +29,8 @@ Usage from Student 2 / Student 3 notebooks:
     from image_pipeline import (
         process_image_array, process_image_bytes, process_video_bytes,
         process_from_folder, align_image, preprocess_image,
+        student2_from_student1_array, student2_from_student1_bytes,
+        student2_from_student1_video, student1_validate,
     )
 """
 
@@ -413,7 +417,10 @@ def process_video_bytes(video_bytes, do_preprocess=False):
 STUDENT1_NOTEBOOK = (
     ROOT / "Student1-Image Acquisition & Pre-processing" / "ImagePreprocessing.ipynb"
 )
-_STUDENT1_FN_NAMES = ("preprocess_image", "process_image_from_bytes", "process_full_video_backend")
+_STUDENT1_FN_NAMES = (
+    "preprocess_image", "process_image_from_bytes", "process_full_video_backend",
+    "validate_pcb_image",          # Student 1 added PCB validation to the notebook
+)
 _STUDENT1_CACHE = None
 
 
@@ -464,7 +471,8 @@ def load_student1_functions():
     suppressed. Cached after the first call.
 
     Returns a dict: {name: function} for
-    'preprocess_image', 'process_image_from_bytes', 'process_full_video_backend'.
+    'preprocess_image', 'process_image_from_bytes', 'process_full_video_backend',
+    'validate_pcb_image'.
     """
     global _STUDENT1_CACHE
     if _STUDENT1_CACHE is not None:
@@ -516,6 +524,10 @@ def student2_from_student1_bytes(image_bytes):
     Student 2 calls Student 1's `process_image_from_bytes` from the start, then
     aligns the returned image, and returns the aligned ARRAY to Student 3.
 
+    Student 1 now returns a dict: {"success", "message", "was_cropped", "image"}
+    (the "image" value is JPEG bytes), so this wrapper unwraps it. The pre-2026
+    bytes return is still accepted defensively in case the notebook is rolled back.
+
     Args:
         image_bytes: raw image bytes (as Student 1's bytes input expects).
 
@@ -523,10 +535,18 @@ def student2_from_student1_bytes(image_bytes):
         aligned BGR array (for Student 3), or None on failure.
     """
     s1 = load_student1_functions()
-    processed = s1["process_image_from_bytes"](image_bytes)   # Student 1 -> JPEG bytes
-    if processed is None:
+    processed = s1["process_image_from_bytes"](image_bytes)   # Student 1 -> dict
+    if processed is None:                                     # S1 hit an exception
         return None
-    img = cv2.imdecode(np.frombuffer(processed, np.uint8), cv2.IMREAD_COLOR)
+    if isinstance(processed, dict):
+        if not processed.get("success"):                     # S1 validation/processing failed
+            return None
+        jpeg_bytes = processed.get("image")
+    else:                                                     # defensive: legacy bytes return
+        jpeg_bytes = processed
+    if not jpeg_bytes:
+        return None
+    img = cv2.imdecode(np.frombuffer(jpeg_bytes, np.uint8), cv2.IMREAD_COLOR)
     if img is None:
         return None                                           # S1 returned undecodable bytes
     return align_image(img)                                    # Student 2 -> aligned array
@@ -555,6 +575,29 @@ def student2_from_student1_video(video_bytes):
         if os.path.exists(processed_path):
             os.remove(processed_path)
     return process_video_bytes(processed_video, do_preprocess=False)  # Student 2 -> aligned bytes
+
+
+def student1_validate(raw_img):
+    """
+    Run Student 1's NEW `validate_pcb_image` (added to their notebook) directly,
+    so the pipeline can reject non-PCB uploads before doing any work.
+
+    Args:
+        raw_img: raw BGR image (numpy array).
+
+    Returns:
+        (valid: bool, message: str) exactly as Student 1's function returns it.
+
+    Raises:
+        NotImplementedError: if the checked-out notebook has no
+            `validate_pcb_image` (e.g. an older Student 1 branch is loaded).
+    """
+    fn = load_student1_functions().get("validate_pcb_image")
+    if fn is None:
+        raise NotImplementedError(
+            "Student 1's notebook has no validate_pcb_image() - update the notebook."
+        )
+    return fn(raw_img)
 
 
 # --------------------------------------------------------------------------- #
