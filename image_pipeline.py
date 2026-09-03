@@ -177,12 +177,244 @@ def preprocess_video_bytes(video_bytes):
 # --------------------------------------------------------------------------- #
 # Student 2 : alignment & calibration (in-memory)
 # --------------------------------------------------------------------------- #
+def _largest_contour(binary_mask):
+    """Return the largest external contour of a binary mask (or ``None``)."""
+    contours, _ = cv2.findContours(binary_mask, cv2.RETR_EXTERNAL,
+                                   cv2.CHAIN_APPROX_SIMPLE)
+    if not contours:
+        return None
+    return max(contours, key=cv2.contourArea)
+
+
+def _clipped_board_corners(binary_mask, image_shape):
+    """
+    Best-effort quadrilateral for a board that is CUT OFF by the frame edge.
+
+    A clipped board has no closed four-corner boundary — its contour runs
+    along the image border — so ``approxPolyDP`` can never resolve a clean
+    quad. The minimum-area rotated rectangle of the largest contour still
+    carries the board's orientation, so using its four corners lets the
+    perspective transform straighten the visible part of the board.
+
+    Returns ``(corners_4x2 float32, coverage)`` or ``(None, coverage)``.
+    """
+    largest = _largest_contour(binary_mask)
+    if largest is None:
+        return None, 0.0
+    area = cv2.contourArea(largest) / (image_shape[0] * image_shape[1])
+    (_, _), (rect_w, rect_h), _angle = cv2.minAreaRect(largest)
+    if rect_w <= 4 or rect_h <= 4:
+        return None, area
+    return cv2.boxPoints(cv2.minAreaRect(largest)).astype("float32"), area
+
+
+def _four_corner_contour(binary_mask, image_shape):
+    """
+    Detect the largest external contour in `binary_mask` and approximate it to
+    exactly 4 corners (the Otsu corner-detection core used by
+    :func:`board_corners_threshold`).
+
+    Returns ``(corners_4x2 float32, coverage)`` or ``(None, coverage)`` where
+    coverage is the contour area as a fraction of the image, so callers can
+    tell a real board from a mask that has merged with the outer frame.
+    """
+    largest = _largest_contour(binary_mask)
+    if largest is None:
+        return None, 0.0
+
+    area = cv2.contourArea(largest) / (image_shape[0] * image_shape[1])
+    perim = cv2.arcLength(largest, True)
+
+    # Try a few epsilon factors to get exactly 4 corners
+    for eps_factor in (0.02, 0.01, 0.03, 0.04):
+        approx = cv2.approxPolyDP(largest, eps_factor * perim, True)
+        if len(approx) == 4:
+            return approx.reshape(4, 2).astype("float32"), area
+
+    return _clipped_board_corners(binary_mask, image_shape)
+
+
+def _looks_like_border_quad(corners, height, width, tol_frac=0.03):
+    """
+    True when `corners` (4 points) describe an axis-aligned rectangle that
+    hugs the image border — i.e. the OUTER FRAME / border ring of the crop
+    rather than the board. Aligning to such a rectangle is a no-op, which is
+    exactly the symptom of a crop that carries the conveyor/desk border.
+
+    Detection is order-independent: the points are checked against the four
+    corners of their own bounding box, so a shape like
+    (11,11) (11,540) (540,540) (540,11) matches, while a tilted board quad
+    such as (28,10) (10,471) (475,501) (501,43) does not.
+    """
+    if corners is None:
+        return False
+    pts = np.asarray(corners, dtype=np.float32)
+    xmin, xmax = float(pts[:, 0].min()), float(pts[:, 0].max())
+    ymin, ymax = float(pts[:, 1].min()), float(pts[:, 1].max())
+    tol = max(6, int(round(tol_frac * min(height, width))))
+    for tx, ty in ((xmin, ymin), (xmax, ymin), (xmax, ymax), (xmin, ymax)):
+        if np.min(np.abs(pts[:, 0] - tx) + np.abs(pts[:, 1] - ty)) > tol:
+            return False
+    return True
+
+
+def _has_outer_ring(img, dark_thr=60, min_frac=0.005):
+    """
+    True when the image carries a substantial DARK border line: a connected
+    dark component that touches the image border and covers at least
+    ``min_frac`` of the frame. Black/grey conveyor and desk borders show up
+    here; a bare white background or a board that merely reaches the frame
+    edge does not, so this never fires on the rotation dataset.
+    """
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    dark = (gray < dark_thr).astype(np.uint8)
+    n, labels = cv2.connectedComponents(dark)
+    if n <= 1:
+        return False
+    h, w = gray.shape
+    border_labels = (set(labels[0, :]) | set(labels[-1, :])
+                     | set(labels[:, 0]) | set(labels[:, -1]))
+    border_labels.discard(0)
+    if not border_labels:
+        return False
+    total = h * w
+    return any(int(np.sum(labels == lab)) >= min_frac * total
+               for lab in border_labels)
+
+
+def rectify_frame(img, pad=6):
+    """
+    Rectify EVERY board of a multi-board frame IN PLACE.
+
+    Each board is warped onto the axis-aligned rectangle that currently bounds
+    it, so the frame keeps its original layout — the operator still sees the
+    conveyor picture, but every board is at its correct angle. This is what the
+    video and live pages want, as opposed to cropping the boards out and
+    composing them side by side.
+
+    Args:
+        img: OpenCV BGR frame (already pre-processed by Module 1, if used).
+        pad: padding to add around each detected board before corner detection.
+
+    Returns:
+        ``(rectified, num_boards, notes)``. ``rectified`` is ``None`` for
+        frames with zero or one board, so callers fall back to the usual
+        whole-image alignment; ``notes`` explains any board that could not be
+        straightened.
+    """
+    if img is None:
+        return None, 0, ["No image supplied."]
+
+    h, w = img.shape[:2]
+    boxes = find_boards(img)
+    if not boxes:
+        return None, 0, ["No board was detected in the frame."]
+    if len(boxes) == 1:
+        return None, 1, []
+
+    result = img.copy()
+    notes: list[str] = []
+    for i, (x, y, bw, bh) in enumerate(boxes):
+        x0, y0 = max(0, x - pad), max(0, y - pad)
+        x1, y1 = min(w, x + bw + pad), min(h, y + bh + pad)
+        crop = img[y0:y1, x0:x1]
+
+        corners, _ = board_corners_threshold(crop)
+        if corners is None:
+            notes.append(f"Board {i + 1} boundary could not be resolved; left as seen.")
+            continue
+
+        # Corners are in crop coordinates; bring them into full-frame space and
+        # warp the board onto its own axis-aligned bounding rectangle.
+        src = order_points(corners + np.array([x0, y0], dtype=np.float32))
+        dst = np.float32([
+            [x, y],
+            [x + bw, y],
+            [x + bw, y + bh],
+            [x, y + bh],
+        ])
+        matrix = cv2.getPerspectiveTransform(src, dst)
+        warped = cv2.warpPerspective(img, matrix, (w, h))
+
+        mask = np.zeros((h, w), np.uint8)
+        cv2.rectangle(mask, (x, y), (x + bw, y + bh), 255, -1)
+        result[mask > 0] = warped[mask > 0]
+
+    return result, len(boxes), notes
+
+
+def _saturation_mask(img, sat_threshold=30):
+    """
+    Colour mask of the board for the fallback path: the PCB is green (high
+    saturation) while grey/belt/desk backgrounds and black borders sit near
+    zero, so this mask survives whatever brightness does. Same threshold and
+    morphology Student 1 uses in ``_pcb_mask`` (SAT_THRESHOLD = 30).
+    """
+    hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
+    mask = (hsv[:, :, 1] > sat_threshold).astype(np.uint8) * 255
+    mask = cv2.morphologyEx(
+        mask, cv2.MORPH_CLOSE,
+        cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (15, 15)), iterations=3,
+    )
+    mask = cv2.morphologyEx(
+        mask, cv2.MORPH_OPEN,
+        cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7)),
+    )
+    return mask
+
+
+def find_boards(img, min_area_frac=0.005, max_boards=10):
+    """
+    Locate every PCB board in a frame — multi-board conveyor frames included.
+
+    The saturation mask separates the green boards from the grey conveyor and
+    black border (both sit near zero saturation), so the result is independent
+    of brightness. The size and aspect filters are the same ones Student 1's
+    ``find_pcb_regions`` applies, so the two agree on where the boards are.
+
+    Args:
+        img: OpenCV BGR frame.
+        min_area_frac: ignore contours smaller than this fraction of the frame.
+        max_boards: stop after this many boxes (left to right).
+
+    Returns:
+        A list of ``(x, y, w, h)`` bounding boxes, ordered left to right.
+    """
+    h, w = img.shape[:2]
+    mask = _saturation_mask(img)
+    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+    boxes = []
+    for contour in contours:
+        x, y, bw, bh = cv2.boundingRect(contour)
+        if bw * bh < min_area_frac * w * h:
+            continue
+        if not (0.4 < bw / float(bh) < 2.5):
+            continue
+        boxes.append((int(x), int(y), int(bw), int(bh)))
+
+    boxes.sort(key=lambda b: b[0])
+    return boxes[:max_boards]
+
+
 def board_corners_threshold(img):
     """
     Detect the 4 corner points of the PCB board using Otsu thresholding.
     The board is separated from the background by brightness, so thresholding
     is far more reliable than Canny (which fragments the board outline and
     locks onto tiny internal features).
+
+    Student 1 crops the board tightly (only a few pixels of padding), so the
+    crop can still carry the OUTER BORDER LINE of the conveyor/desk, and the
+    surrounding background can have almost the same brightness as the board.
+    Otsu then either merges board + background (the largest contour becomes
+    the outer image frame, >95% coverage) or locks onto the border ring
+    itself (an axis-aligned rectangle hugging the frame) — aligning to either
+    is a no-op. When either signature is detected, the outer border line is
+    ignored first: a thin margin is cleared from the mask and the detection is
+    retried; if a thick border survives that (it is still an axis-aligned
+    border-hugging rectangle), the colour/saturation mask is used instead,
+    because grey and black borders have no saturation while the board does.
 
     Returns (corners_4x2 float32, board coverage) or (None, coverage).
     """
@@ -196,21 +428,31 @@ def board_corners_threshold(img):
     kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (9, 9))
     thresh = cv2.morphologyEx(thresh, cv2.MORPH_CLOSE, kernel)
 
-    contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    if not contours:
-        return None, 0.0
+    h, w = thresh.shape
+    corners, area = _four_corner_contour(thresh, img.shape)
 
-    largest = max(contours, key=cv2.contourArea)
-    area = cv2.contourArea(largest) / (img.shape[0] * img.shape[1])
-    perim = cv2.arcLength(largest, True)
+    # Either the blob is (nearly) the whole image, or the detected quad is an
+    # axis-aligned border-hugging rectangle AND a dark border line is present:
+    # in both cases the Otsu result is the outer border, not the board.
+    if area > 0.95 or (_has_outer_ring(img) and _looks_like_border_quad(corners, h, w)):
+        # 1) Ignore the outer border line: clear a thin margin and retry.
+        margin = max(2, int(round(0.02 * min(h, w))))
+        cleaned = thresh.copy()
+        cleaned[:margin, :] = 0
+        cleaned[-margin:, :] = 0
+        cleaned[:, :margin] = 0
+        cleaned[:, -margin:] = 0
+        corners, area = _four_corner_contour(cleaned, img.shape)
 
-    # Try a few epsilon factors to get exactly 4 corners
-    for eps_factor in (0.02, 0.01, 0.03, 0.04):
-        approx = cv2.approxPolyDP(largest, eps_factor * perim, True)
-        if len(approx) == 4:
-            return approx.reshape(4, 2).astype("float32"), area
+        # 2) A thick border survives the margin clear (still a border-hugging
+        #    rectangle) — switch to the colour mask, which separates the green
+        #    board from the border by saturation instead of brightness.
+        if corners is None or _looks_like_border_quad(corners, h, w):
+            sat_corners, sat_area = _four_corner_contour(_saturation_mask(img), img.shape)
+            if sat_corners is not None:
+                corners, area = sat_corners, sat_area
 
-    return None, area
+    return corners, area
 
 
 def order_points(points):
