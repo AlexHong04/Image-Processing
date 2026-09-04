@@ -363,6 +363,32 @@ def _saturation_mask(img, sat_threshold=30):
     return mask
 
 
+def _green_mask(img, h_lo=40, h_hi=90, sat_min=60, val_min=40):
+    """
+    Green-hue board mask, the last-resort fallback for corner detection.
+
+    The saturation mask only separates board from background by chroma, so a
+    dark surround that carries enough colour noise (a phone shot of a board on
+    a light box: the black frame sits at S ~ 39, just above SAT = 30) can merge
+    with the board into one frame-hugging blob. Gating on the green hue band
+    the PCB itself occupies separates the two — the black frame sits at S ~ 39
+    (below ``sat_min``) and the paper near zero chroma, while the board is
+    H 40-90 at S 60+. Same morphology as :func:`_saturation_mask`.
+    """
+    hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
+    h, s, v = hsv[:, :, 0], hsv[:, :, 1], hsv[:, :, 2]
+    mask = ((h >= h_lo) & (h <= h_hi) & (s > sat_min) & (v > val_min)).astype(np.uint8) * 255
+    mask = cv2.morphologyEx(
+        mask, cv2.MORPH_CLOSE,
+        cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (15, 15)), iterations=3,
+    )
+    mask = cv2.morphologyEx(
+        mask, cv2.MORPH_OPEN,
+        cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7)),
+    )
+    return mask
+
+
 def find_boards(img, min_area_frac=0.005, max_boards=10):
     """
     Locate every PCB board in a frame — multi-board conveyor frames included.
@@ -451,6 +477,17 @@ def board_corners_threshold(img):
             sat_corners, sat_area = _four_corner_contour(_saturation_mask(img), img.shape)
             if sat_corners is not None:
                 corners, area = sat_corners, sat_area
+
+    # 3) The saturation mask can still latch onto the outer frame: a dark
+    #    border with a colour cast (S > 30, e.g. the black surround of a phone
+    #    shot of a board on a light box) merges with the board into one
+    #    frame-hugging blob. Its corners align to the frame itself — a no-op,
+    #    and the detector then sees the tilted board it was never trained on.
+    #    As a last resort, gate on the green hue band the board occupies.
+    if corners is None or _looks_like_border_quad(corners, h, w) or area > 0.9:
+        green_corners, green_area = _four_corner_contour(_green_mask(img), img.shape)
+        if green_corners is not None:
+            corners, area = green_corners, green_area
 
     return corners, area
 
